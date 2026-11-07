@@ -12,7 +12,7 @@ jobs:
       - run: cargo install cargo-fuzz
       - name: Run fuzzer
         run: cargo +nightly fuzz run parse -- -max_total_time=300 2>&1 | tee fuzz-run.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: fuzz-output
