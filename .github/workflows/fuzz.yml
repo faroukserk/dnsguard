@@ -1,5 +1,8 @@
 name: Fuzz
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
 jobs:
   fuzz:
     runs-on: ubuntu-latest
@@ -7,4 +10,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - run: cargo install cargo-fuzz
-      - run: cargo +nightly fuzz run parse -- -max_total_time=300
+      - name: Run fuzzer
+        run: cargo +nightly fuzz run parse -- -max_total_time=300 2>&1 | tee fuzz-run.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-output
+          path: |
+            fuzz-run.log
+            fuzz/artifacts/
+          if-no-files-found: warn
