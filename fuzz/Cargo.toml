@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 dnsguard = { path = ".." }
+tokio = { version = "1", features = ["full"] }
 
 [[bin]]
 name = "parse"
