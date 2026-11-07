@@ -10,11 +10,21 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
       - run: cargo install cargo-fuzz
+
+      - name: Restore fuzz corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/parse
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-
+
       - name: Run fuzzer
         shell: bash
         run: |
           set -o pipefail
           cargo +nightly fuzz run parse -- -max_total_time=300 2>&1 | tee fuzz-run.log
+
       - name: Report results
         if: always()
         shell: bash
@@ -33,9 +43,17 @@ jobs:
             else
               echo "No crash files."
             fi
+            echo ""
+            echo "Corpus files: $(ls fuzz/corpus/parse | wc -l)"
           } | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "--- log tail ---"
-          tail -n 15 fuzz-run.log 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-corpus
+          path: fuzz/corpus/parse/
+          if-no-files-found: ignore
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
