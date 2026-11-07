@@ -5,18 +5,42 @@ on:
     - cron: "0 3 * * *"
 jobs:
   fuzz:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
       - run: cargo install cargo-fuzz
       - name: Run fuzzer
-        run: cargo +nightly fuzz run parse -- -max_total_time=300 2>&1 | tee fuzz-run.log
-      - uses: actions/upload-artifact@v5
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo +nightly fuzz run parse -- -max_total_time=300 2>&1 | tee fuzz-run.log
+      - name: Report results
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Fuzz results"
+            echo ""
+            echo "Last lines of fuzz log:"
+            echo '```'
+            tail -n 15 fuzz-run.log 2>/dev/null || echo "no log file"
+            echo '```'
+            echo ""
+            if ls fuzz/artifacts/parse/* >/dev/null 2>&1; then
+              echo "**Crash files found:**"
+              ls fuzz/artifacts/parse/
+            else
+              echo "No crash files."
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "--- log tail ---"
+          tail -n 15 fuzz-run.log 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: fuzz-output
           path: |
             fuzz-run.log
             fuzz/artifacts/
-          if-no-files-found: warn
+          if-no-files-found: ignore
