@@ -149,33 +149,35 @@ async fn main() -> Result<()> {
             }
         });
     }
-    // scheduled refresh task
-    if let Some(dnsguard::config::ListSource::Remote(url)) = config.sources().1 {
-        let state_r = state.clone();
-        let cache_dir = PathBuf::from(&config.cache_dir);
-        let cp = dnsguard::list_cache::cache_path_for(&cache_dir, &url);
-        let client = reqwest::Client::new();
-        let url_r = url.clone();
-        let interval_secs = config.refresh_interval_secs;
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
-            ticker.tick().await; // skip immediate
-            loop {
-                ticker.tick().await;
-                match dnsguard::downloader::fetch_list(&client, &url_r, 20 * 1024 * 1024).await {
-                    Ok(bytes) => {
-                        if dnsguard::list_cache::write_atomic(&cp, &bytes).is_ok() {
-                            let allow = Vec::new();
-                            let _ = state_r.reload_from_bytes(&allow, &bytes);
+    // scheduled refresh task for every remote source
+    for src in [config.sources().0, config.sources().1].into_iter().flatten() {
+        if let dnsguard::config::ListSource::Remote(url) = src {
+            let state_r = state.clone();
+            let cache_dir = PathBuf::from(&config.cache_dir);
+            let cp = dnsguard::list_cache::cache_path_for(&cache_dir, &url);
+            let client = reqwest::Client::new();
+            let url_r = url.clone();
+            let interval_secs = config.refresh_interval_secs.max(1);
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+                ticker.tick().await; // skip immediate
+                loop {
+                    ticker.tick().await;
+                    match dnsguard::downloader::fetch_list(&client, &url_r, 20 * 1024 * 1024).await {
+                        Ok(bytes) => {
+                            if dnsguard::list_cache::write_atomic(&cp, &bytes).is_ok() {
+                                let allow = Vec::new();
+                                let _ = state_r.reload_from_bytes(&allow, &bytes);
+                            }
+                        }
+                        Err(e) => {
+                            state_r.list_download_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            tracing::warn!(url = %url_r, error = ?e, "remote list refresh failed");
                         }
                     }
-                    Err(e) => {
-                        state_r.list_download_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        tracing::warn!(url = %url_r, error = ?e, "remote list refresh failed");
-                    }
                 }
-            }
-        });
+            });
+        }
     }
     let socket = std::sync::Arc::new(UdpSocket::bind(config.listen).await.context("binding UDP listener")?);
     info!(address = %socket.local_addr()?, "DNSGuard UDP listener started");
