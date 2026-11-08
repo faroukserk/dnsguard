@@ -298,3 +298,64 @@ async fn empty_body_keeps_cache() {
     let log_text = fs::read_to_string(&log_path).unwrap_or_default();
     assert!(log_text.contains("warn") || log_text.contains("download failed") || log_text.contains("list_download_failures") || log_text.contains("Empty"), "no failure log. log:\n{log_text}");
 }
+
+#[tokio::test]
+async fn oversized_body_rejected() {
+    let big = vec![b'a'; 20 * 1024 * 1024 + 1];
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(big))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = dir.path().join("cache");
+    fs::create_dir_all(&cache).expect("cache dir");
+    let url = url::Url::parse(&server.uri()).unwrap();
+    let cp = dnsguard::list_cache::cache_path_for(&cache, &url);
+    dnsguard::list_cache::write_atomic(&cp, b"old-block.example\n").expect("write cache");
+
+    let allow = dir.path().join("allowlist.txt");
+    fs::write(&allow, "").expect("allow");
+
+    let port = free_port();
+    let config_path = dir.path().join("config.toml");
+    let config = format!(
+        "listen = \"127.0.0.1:{port}\"\nupstreams = [\"1.1.1.1:53\"]\nallowlist = \"{}\"\nblocklist = \"{}\"\ncache_dir = \"{}\"\nallow_http = true\nrefresh_interval_secs = 3600\n",
+        allow.display().to_string().replace('\\', "/"),
+        server.uri(),
+        cache.display().to_string().replace('\\', "/")
+    );
+    fs::write(&config_path, config).expect("config");
+
+    let log_path = dir.path().join("service.log");
+    let log = fs::File::create(&log_path).expect("log");
+    let child = Command::new(env!("CARGO_BIN_EXE_dnsguard"))
+        .arg("--config")
+        .arg(&config_path)
+        .stdout(Stdio::from(log.try_clone().expect("clone")))
+        .stderr(Stdio::from(log))
+        .stdin(Stdio::null())
+        .spawn()
+        .expect("spawn service");
+    let _guard = KillOnDrop(child);
+
+    let start = Instant::now();
+    let mut up = false;
+    while start.elapsed() < Duration::from_secs(5) {
+        if query_raw(port, "warmup.example").is_some() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(up, "service did not answer DNS");
+
+    std::thread::sleep(Duration::from_secs(2));
+
+    let ans = query_a(port, "old-block.example");
+    assert_eq!(ans.as_deref(), Some("0.0.0.0"), "cache not kept");
+
+    let received = server.received_requests().await.unwrap_or_default();
+    assert!(!received.is_empty(), "mock received no request");
+}
