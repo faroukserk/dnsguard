@@ -142,7 +142,7 @@ fn cname_to_blocked_name_returns_zero_address() {
         .stdin(Stdio::null())
         .spawn()
         .expect("spawn service");
-    let _guard = KillOnDrop(child);
+    let mut guard = KillOnDrop(child);
 
     let start = Instant::now();
     let mut up = false;
@@ -153,7 +153,13 @@ fn cname_to_blocked_name_returns_zero_address() {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    assert!(up, "service did not answer DNS on port {port}");
+    if !up {
+        let exit = guard.0.try_wait().ok().flatten();
+        let log_text = fs::read_to_string(&log_path).unwrap_or_default();
+        panic!(
+            "service did not answer DNS on port {port}. exit status: {exit:?}. service log:\\n{log_text}"
+        );
+    }
 
     let first = query_a(port, "innocent.example");
     let second = query_a(port, "innocent.example");
