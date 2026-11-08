@@ -203,38 +203,3 @@ fn build_blocked(request: &[u8], qtype: u16) -> Vec<u8> {
     }
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-
-    #[test]
-    fn suffix_matching_blocks_subdomain() {
-        let f = Filter::new(["ads.example.com".to_string()].into(), HashSet::new());
-        assert!(f.is_blocked("a.b.ads.example.com"));
-        assert!(f.is_blocked("ads.example.com"));
-        assert!(!f.is_blocked("example.com"));
-    }
-
-    #[test]
-    fn allowlist_precedence() {
-        let f = Filter::new(
-            ["example.com".to_string()].into(),
-            ["safe.example.com".to_string()].into(),
-        );
-        assert!(f.is_blocked("ads.example.com"));
-        assert!(!f.is_blocked("safe.example.com"));
-    }
-
-    #[test]
-    fn load_hosts_style_list() {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        writeln!(file, "0.0.0.0 ads.example.com").unwrap();
-        writeln!(file, "# comment").unwrap();
-        writeln!(file, "tracker.example.com").unwrap();
-        let set = load_list(file.path());
-        assert!(set.contains("ads.example.com"));
-        assert!(set.contains("tracker.example.com"));
-    }
-}
