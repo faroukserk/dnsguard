@@ -7,14 +7,34 @@ use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 
+use arc_swap::ArcSwap;
+use std::sync::atomic::{AtomicU64, Ordering};
 pub struct State {
     pub upstreams: Vec<SocketAddr>,
     pub timeout_ms: u64,
-    pub filter: Filter,
+    pub filter: ArcSwap<Filter>,
     pub cache: Option<Arc<DnsCache>>,
     pub udp_sem: Arc<Semaphore>,
     pub tcp_sem: Arc<Semaphore>,
     pub tcp_idle_timeout_secs: u64,
+    pub filter_reloads: AtomicU64,
+    pub filter_reload_failures: AtomicU64,
+}
+
+impl State {
+    pub fn reload(&self, allow: &std::path::Path, block: &std::path::Path) -> Result<(), crate::filter::FilterError> {
+        match crate::filter::Filter::from_files(allow, block) {
+            Ok(new_filter) => {
+                self.filter.store(Arc::new(new_filter));
+                self.filter_reloads.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(e) => {
+                self.filter_reload_failures.fetch_add(1, Ordering::Relaxed);
+                Err(e)
+            }
+        }
+    }
 }
 
 pub async fn handle_query(bytes: &[u8], state: &State) -> Option<Vec<u8>> {
@@ -41,7 +61,7 @@ pub async fn handle_query(bytes: &[u8], state: &State) -> Option<Vec<u8>> {
     let qtype = u16::from(question.query_type());
 
     // filter
-    if let Some(resp) = state.filter.blocked_response(bytes) { return Some(resp); }
+    if let Some(resp) = state.filter.load().blocked_response(bytes) { return Some(resp); }
 
     // cache
     let key = CacheKey { name: name.clone(), record_type: qtype };

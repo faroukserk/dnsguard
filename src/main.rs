@@ -3,57 +3,13 @@ use dnsguard::handler::{handle_query, State};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use serde::Deserialize;
-use std::{net::SocketAddr, path::PathBuf};
+use std::{path::{Path, PathBuf}};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
 use tracing::{info, warn};
 
-#[derive(Debug, Clone, Deserialize)]
-struct Config {
-    #[serde(default = "default_listen")]
-    listen: SocketAddr,
-    #[serde(default = "default_upstreams")]
-    upstreams: Vec<SocketAddr>,
-    #[serde(default)]
-    blocklist: Option<PathBuf>,
-    #[serde(default)]
-    allowlist: Option<PathBuf>,
-    #[serde(default = "default_timeout")]
-    upstream_timeout_ms: u64,
-    #[serde(default = "default_max_in_flight")]
-    max_in_flight: usize,
-    #[serde(default = "default_max_tcp")]
-    max_tcp_connections: usize,
-    #[serde(default = "default_tcp_idle")]
-    tcp_idle_timeout_secs: u64,
-}
-
-fn default_listen() -> SocketAddr { "127.0.0.1:5353".parse().expect("valid default") }
-fn default_upstreams() -> Vec<SocketAddr> { vec!["1.1.1.1:53".parse().expect("valid default")] }
-fn default_timeout() -> u64 { 2000 }
-fn default_max_in_flight() -> usize { 1024 }
-fn default_max_tcp() -> usize { 256 }
-fn default_tcp_idle() -> u64 { 5 }
-
-impl Default for Config {
-    fn default() -> Self { Self { listen: default_listen(), upstreams: default_upstreams(), blocklist: None, allowlist: None, upstream_timeout_ms: default_timeout(), max_in_flight: default_max_in_flight(), max_tcp_connections: default_max_tcp(), tcp_idle_timeout_secs: default_tcp_idle() } }
-}
-
-impl Config {
-    fn load(path: Option<&PathBuf>) -> Result<Self> {
-        let Some(path) = path else { return Ok(Self::default()) };
-        let text = std::fs::read_to_string(path).with_context(|| format!("reading config {}", path.display()))?;
-        let config: Self = toml::from_str(&text).with_context(|| format!("parsing config {}", path.display()))?;
-        anyhow::ensure!(!config.upstreams.is_empty(), "at least one upstream is required");
-        anyhow::ensure!(config.max_in_flight > 0, "max_in_flight must be > 0");
-        anyhow::ensure!(config.max_tcp_connections > 0, "max_tcp_connections must be > 0");
-        anyhow::ensure!(config.tcp_idle_timeout_secs > 0, "tcp_idle_timeout_secs must be > 0");
-        Ok(config)
-    }
-}
-
+use dnsguard::config::Config;
 #[derive(Debug, Parser)]
 #[command(name = "dnsguard", about = "DNSGuard network filter")]
 struct Args {
@@ -65,8 +21,9 @@ struct Args {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("dnsguard=info").init();
     let args = Args::parse();
+    let config_path = args.config.clone();
     let config = Config::load(args.config.as_ref())?;
-    let filter = Filter::load(config.blocklist.as_deref(), config.allowlist.as_deref());
+    let filter = arc_swap::ArcSwap::new(Arc::new(Filter::load(config.blocklist.as_deref(), config.allowlist.as_deref())));
     let state = Arc::new(State {
         upstreams: config.upstreams.clone(),
         timeout_ms: config.upstream_timeout_ms,
@@ -75,7 +32,74 @@ async fn main() -> Result<()> {
         udp_sem: Arc::new(tokio::sync::Semaphore::new(config.max_in_flight)),
         tcp_sem: Arc::new(tokio::sync::Semaphore::new(config.max_tcp_connections)),
         tcp_idle_timeout_secs: config.tcp_idle_timeout_secs,
+        filter_reloads: std::sync::atomic::AtomicU64::new(0),
+        filter_reload_failures: std::sync::atomic::AtomicU64::new(0),
     });
+    let config_dir = config_path.map(|p| p.parent().unwrap_or(Path::new(".")).to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    let allow_path = config.allowlist.as_ref().map(|p| if p.is_absolute() { p.clone() } else { config_dir.join(p) });
+    let block_path = config.blocklist.as_ref().map(|p| if p.is_absolute() { p.clone() } else { config_dir.join(p) });
+    if let (Some(allow), Some(block)) = (allow_path.clone(), block_path.clone()) {
+        let poll_ms = config.poll_interval_ms;
+        let state_watch = state.clone();
+        let allow_w = allow.clone();
+        let block_w = block.clone();
+        tokio::spawn(async move {
+            let mut last_allow = std::fs::metadata(&allow_w).and_then(|m| m.modified()).ok();
+            let mut last_block = std::fs::metadata(&block_w).and_then(|m| m.modified()).ok();
+            let mut last_allow_len = std::fs::metadata(&allow_w).map(|m| m.len()).ok();
+            let mut last_block_len = std::fs::metadata(&block_w).map(|m| m.len()).ok();
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(poll_ms));
+            loop {
+                interval.tick().await;
+                tracing::debug!("file watch tick");
+                let cur_allow = std::fs::metadata(&allow_w).and_then(|m| m.modified()).ok();
+                let cur_block = std::fs::metadata(&block_w).and_then(|m| m.modified()).ok();
+                let cur_allow_len = std::fs::metadata(&allow_w).map(|m| m.len()).ok();
+                let cur_block_len = std::fs::metadata(&block_w).map(|m| m.len()).ok();
+                if cur_allow != last_allow || cur_block != last_block || cur_allow_len != last_allow_len || cur_block_len != last_block_len {
+                    tracing::info!("file change detected, reloading");
+                    if state_watch.reload(&allow_w, &block_w).is_ok() {
+                        tracing::info!("filter reloaded (file change)");
+                    }
+                    last_allow = cur_allow;
+                    last_block = cur_block;
+                    last_allow_len = cur_allow_len;
+                    last_block_len = cur_block_len;
+                }
+            }
+        });
+        // keep signal handler too
+        let state_sig = state.clone();
+        let allow_s = allow.clone();
+        let block_s = block.clone();
+        tokio::spawn(async move {
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{SignalKind, signal};
+                if let Ok(mut sig) = signal(SignalKind::hangup()) {
+                    loop {
+                        sig.recv().await;
+                        if state_sig.reload(&allow_s, &block_s).is_ok() {
+                            tracing::info!("filter reloaded");
+                        }
+                    }
+                }
+            }
+            #[cfg(windows)]
+            {
+                if let Ok(mut ctrl) = tokio::signal::windows::ctrl_break() {
+                    loop {
+                        ctrl.recv().await;
+                        if state_sig.reload(&allow_s, &block_s).is_ok() {
+                            tracing::info!("filter reloaded");
+                        }
+                    }
+                }
+            }
+        });
+    } else {
+        warn!("reload disabled: allowlist/blocklist not configured");
+    }
     let socket = std::sync::Arc::new(UdpSocket::bind(config.listen).await.context("binding UDP listener")?);
     info!(address = %socket.local_addr()?, "DNSGuard UDP listener started");
 

@@ -2,6 +2,27 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum FilterError {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("file has no valid rules: {0}")]
+    Empty(String),
+}
+
+impl Filter {
+    pub fn from_files(allow: &std::path::Path, block: &std::path::Path) -> Result<Self, FilterError> {
+        let allow_text = std::fs::read_to_string(allow)?;
+        let block_text = std::fs::read_to_string(block)?;
+        // write temp files? load_list expects path; just parse sets manually
+        let allowed = parse_list_text(&allow_text);
+        let blocked = parse_list_text(&block_text);
+        if blocked.is_empty() { return Err(FilterError::Empty(block.display().to_string())); }
+        Ok(Self::new(blocked, allowed))
+    }
+}
 #[derive(Default, Clone)]
 pub struct Filter {
     blocked: HashSet<String>,
@@ -53,18 +74,20 @@ fn suffix_match(set: &HashSet<String>, domain: &str) -> bool {
     false
 }
 
-fn load_list(path: &Path) -> HashSet<String> {
+fn parse_list_text(text: &str) -> HashSet<String> {
     let mut out = HashSet::new();
-    if let Ok(text) = fs::read_to_string(path) {
-        for line in text.lines() {
-            let line = line.split('#').next().unwrap_or("").trim();
-            if line.is_empty() { continue; }
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            let domain = if parts.len() >= 2 { parts[parts.len()-1] } else { parts[0] };
-            if !domain.is_empty() { out.insert(domain.to_string()); }
-        }
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() { continue; }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        let domain = if parts.len() >= 2 { parts[parts.len()-1] } else { parts[0] };
+        if !domain.is_empty() { out.insert(domain.to_string()); }
     }
     out
+}
+
+fn load_list(path: &Path) -> HashSet<String> {
+    fs::read_to_string(path).map(|t| parse_list_text(&t)).unwrap_or_default()
 }
 
 fn parse_question(request: &[u8]) -> Option<(String, u16)> {
