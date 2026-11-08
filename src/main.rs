@@ -219,7 +219,9 @@ async fn main() -> Result<()> {
                         let out = if let Ok(m) = hickory_proto::op::Message::from_vec(&resp_bytes) {
                             dnsguard::handler::fit_for_udp(m, limit).unwrap_or(resp_bytes)
                         } else { resp_bytes };
-                        let _ = socket.send_to(&out, client).await;
+                        if let Err(e) = socket.send_to(&out, client).await {
+                            tracing::debug!(error = %e, %client, "send_to failed");
+                        }
                     }
                 });
             }
