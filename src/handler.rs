@@ -19,6 +19,8 @@ pub struct State {
     pub tcp_idle_timeout_secs: u64,
     pub filter_reloads: AtomicU64,
     pub filter_reload_failures: AtomicU64,
+    pub list_downloads: AtomicU64,
+    pub list_download_failures: AtomicU64,
 }
 
 impl State {
@@ -31,6 +33,19 @@ impl State {
             }
             Err(e) => {
                 self.filter_reload_failures.fetch_add(1, Ordering::Relaxed);
+                Err(e)
+            }
+        }
+    }
+    pub fn reload_from_bytes(&self, allow: &[u8], block: &[u8]) -> Result<(), crate::filter::FilterError> {
+        match crate::filter::Filter::from_bytes(allow, block) {
+            Ok(new_filter) => {
+                self.filter.store(Arc::new(new_filter));
+                self.list_downloads.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(e) => {
+                self.list_download_failures.fetch_add(1, Ordering::Relaxed);
                 Err(e)
             }
         }

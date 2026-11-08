@@ -24,6 +24,25 @@ async fn main() -> Result<()> {
     let config_path = args.config.clone();
     let config = Config::load(args.config.as_ref())?;
     let filter = arc_swap::ArcSwap::new(Arc::new(Filter::load(config.blocklist.as_deref(), config.allowlist.as_deref())));
+    // cache-first startup for remote sources
+    let (allow_src, block_src) = config.sources();
+    let mut allow_bytes = Vec::new();
+    let mut block_bytes = Vec::new();
+    let mut any_cached = false;
+    if let Some(dnsguard::config::ListSource::Remote(url)) = allow_src {
+        let cp = dnsguard::list_cache::cache_path_for(&PathBuf::from(&config.cache_dir), &url);
+        if let Some(b) = dnsguard::list_cache::read_cached(&cp) { allow_bytes = b; any_cached = true; }
+        else { info!(url = %url, "remote source has no cache yet"); }
+    }
+    if let Some(dnsguard::config::ListSource::Remote(url)) = block_src {
+        let cp = dnsguard::list_cache::cache_path_for(&PathBuf::from(&config.cache_dir), &url);
+        if let Some(b) = dnsguard::list_cache::read_cached(&cp) { block_bytes = b; any_cached = true; info!(url = %url, "loaded remote list from cache"); }
+        else { info!(url = %url, "remote source has no cache yet"); }
+    }
+    if any_cached && !block_bytes.is_empty() && let Ok(f) = Filter::from_bytes(&allow_bytes, &block_bytes) {
+        info!(allow_bytes = allow_bytes.len(), block_bytes = block_bytes.len(), "loaded remote lists from cache");
+        filter.store(Arc::new(f));
+    }
     let state = Arc::new(State {
         upstreams: config.upstreams.clone(),
         timeout_ms: config.upstream_timeout_ms,
@@ -34,6 +53,8 @@ async fn main() -> Result<()> {
         tcp_idle_timeout_secs: config.tcp_idle_timeout_secs,
         filter_reloads: std::sync::atomic::AtomicU64::new(0),
         filter_reload_failures: std::sync::atomic::AtomicU64::new(0),
+        list_downloads: std::sync::atomic::AtomicU64::new(0),
+        list_download_failures: std::sync::atomic::AtomicU64::new(0),
     });
     let config_dir = config_path.map(|p| p.parent().unwrap_or(Path::new(".")).to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
     let allow_path = config.allowlist.as_ref().map(|p| if p.is_absolute() { p.clone() } else { config_dir.join(p) });

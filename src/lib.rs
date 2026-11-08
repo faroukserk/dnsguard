@@ -26,6 +26,8 @@ pub mod testing {
             tcp_idle_timeout_secs: 5,
             filter_reloads: AtomicU64::new(0),
             filter_reload_failures: AtomicU64::new(0),
+            list_downloads: AtomicU64::new(0),
+            list_download_failures: AtomicU64::new(0),
         }
     }
 }

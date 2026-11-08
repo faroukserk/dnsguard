@@ -51,6 +51,8 @@ async fn reload_changes_result() {
         tcp_idle_timeout_secs: 5,
         filter_reloads: std::sync::atomic::AtomicU64::new(0),
         filter_reload_failures: std::sync::atomic::AtomicU64::new(0),
+        list_downloads: std::sync::atomic::AtomicU64::new(0),
+        list_download_failures: std::sync::atomic::AtomicU64::new(0),
     };
     // make a query for a domain not blocked initially
     let new_block = dir.path().join("block2.txt");
@@ -77,6 +79,8 @@ async fn reload_bad_leaves_old() {
         tcp_idle_timeout_secs: 5,
         filter_reloads: std::sync::atomic::AtomicU64::new(0),
         filter_reload_failures: std::sync::atomic::AtomicU64::new(0),
+        list_downloads: std::sync::atomic::AtomicU64::new(0),
+        list_download_failures: std::sync::atomic::AtomicU64::new(0),
     };
     let bad = dir.path().join("missing.txt");
     let before_fail = state.filter_reload_failures.load(Ordering::Relaxed);
@@ -103,6 +107,8 @@ async fn reload_concurrency() {
         tcp_idle_timeout_secs: 5,
         filter_reloads: std::sync::atomic::AtomicU64::new(0),
         filter_reload_failures: std::sync::atomic::AtomicU64::new(0),
+        list_downloads: std::sync::atomic::AtomicU64::new(0),
+        list_download_failures: std::sync::atomic::AtomicU64::new(0),
     });
     // build a minimal DNS query for ads.example.com A
     // skip actual query; just ensure reload doesn't panic
