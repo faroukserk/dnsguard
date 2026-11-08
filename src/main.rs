@@ -121,6 +121,33 @@ async fn main() -> Result<()> {
     } else {
         warn!("reload disabled: allowlist/blocklist not configured");
     }
+    // background fetch for remote block source
+    if let Some(dnsguard::config::ListSource::Remote(url)) = config.sources().1 {
+        let state_bg = state.clone();
+        let cache_dir = PathBuf::from(&config.cache_dir);
+        let cp = dnsguard::list_cache::cache_path_for(&cache_dir, &url);
+        let client = reqwest::Client::new();
+        let url_c = url.clone();
+        tokio::spawn(async move {
+            match dnsguard::downloader::fetch_list(&client, &url_c, 20 * 1024 * 1024).await {
+                Ok(bytes) => {
+                    if dnsguard::list_cache::write_atomic(&cp, &bytes).is_ok() {
+                        let allow_bytes = dnsguard::list_cache::read_cached(&dnsguard::list_cache::cache_path_for(&cache_dir, &url_c)).unwrap_or_default();
+                        // allow empty ok
+                        let _ = allow_bytes;
+                        let allow = Vec::new();
+                        if state_bg.reload_from_bytes(&allow, &bytes).is_ok() {
+                            tracing::info!(url = %url_c, "remote list downloaded");
+                        }
+                    }
+                }
+                Err(e) => {
+                    state_bg.list_download_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    tracing::warn!(url = %url_c, error = ?e, "remote list download failed");
+                }
+            }
+        });
+    }
     let socket = std::sync::Arc::new(UdpSocket::bind(config.listen).await.context("binding UDP listener")?);
     info!(address = %socket.local_addr()?, "DNSGuard UDP listener started");
 
