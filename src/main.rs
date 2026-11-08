@@ -123,6 +123,7 @@ async fn main() -> Result<()> {
     }
     // background fetch for remote block source
     if let Some(dnsguard::config::ListSource::Remote(url)) = config.sources().1 {
+        tracing::info!(url = %url, "starting remote list fetch");
         let state_bg = state.clone();
         let cache_dir = PathBuf::from(&config.cache_dir);
         let cp = dnsguard::list_cache::cache_path_for(&cache_dir, &url);
