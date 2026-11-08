@@ -158,6 +158,7 @@ async fn main() -> Result<()> {
             let client = reqwest::Client::new();
             let url_r = url.clone();
             let interval_secs = config.refresh_interval_secs.max(1);
+            let allow_path_r = config.allowlist.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
                 ticker.tick().await; // skip immediate
@@ -166,8 +167,14 @@ async fn main() -> Result<()> {
                     match dnsguard::downloader::fetch_list(&client, &url_r, 20 * 1024 * 1024).await {
                         Ok(bytes) => {
                             if dnsguard::list_cache::write_atomic(&cp, &bytes).is_ok() {
-                                let allow = Vec::new();
-                                let _ = state_r.reload_from_bytes(&allow, &bytes);
+                                let allow_bytes = allow_path_r.as_ref().and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
+                                match state_r.reload_from_bytes(&allow_bytes, &bytes) {
+                                    Ok(()) => {}
+                                    Err(e) => {
+                                        state_r.list_download_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        tracing::warn!(url = %url_r, error = %e, "remote list refresh reload failed");
+                                    }
+                                }
                             }
                         }
                         Err(e) => {
@@ -189,7 +196,10 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             result = socket.recv_from(&mut packet) => {
-                let (length, client) = result.context("receiving UDP packet")?;
+                let (length, client) = match result {
+                    Ok(v) => v,
+                    Err(e) => { tracing::debug!(error = %e, "recv_from failed"); continue; }
+                };
                 if length < 12 {
                     warn!(%client, length, "dropping malformed DNS packet");
                     continue;
