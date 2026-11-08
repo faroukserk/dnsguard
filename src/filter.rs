@@ -240,21 +240,82 @@ mod tests {
         assert!(set.contains("tracker.example.com"));
     }
 
-    #[test]
-    fn chain_no_cname_returns_query_only() {
-        // placeholder
-    let _ = ();
+    fn make_reply(q: &str, cnames: &[(&str,&str)]) -> hickory_proto::op::Message {
+        use hickory_proto::op::{Message, Query, MessageType, OpCode};
+        use hickory_proto::rr::{Name, Record, RData, RecordType};
+        use std::str::FromStr;
+        let mut m = Message::new(0, MessageType::Response, OpCode::Query);
+        let qname = Name::from_str(q).unwrap();
+        m.add_query(Query::query(qname.clone(), RecordType::A));
+        for (from, to) in cnames {
+            let r = Record::from_rdata(
+                Name::from_str(from).unwrap(),
+                300,
+                RData::CNAME(hickory_proto::rr::rdata::CNAME(Name::from_str(to).unwrap())),
+            );
+            m.add_answer(r);
+        }
+        m
     }
 
     #[test]
-    fn chain_single_hop() { assert!(true); }
+    fn chain_no_cname_returns_query_only() {
+        let m = make_reply("example.com.", &[]);
+        let v = names_in_chain(&m);
+        assert_eq!(v.len(), 1);
+    }
 
     #[test]
-    fn chain_three_hops() { assert!(true); }
+    fn chain_single_hop() {
+        let m = make_reply("a.example.", &[("a.example.", "b.example.")]);
+        let v = names_in_chain(&m);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].to_string(), "a.example.");
+        assert_eq!(v[1].to_string(), "b.example.");
+    }
 
     #[test]
-    fn chain_loop_terminates() { assert!(true); }
+    fn chain_three_hops() {
+        let m = make_reply("a.example.", &[
+            ("a.example.", "b.example."),
+            ("b.example.", "c.example."),
+            ("c.example.", "d.example."),
+        ]);
+        let v = names_in_chain(&m);
+        assert_eq!(v.len(), 4);
+        assert_eq!(v[0].to_string(), "a.example.");
+        assert_eq!(v[1].to_string(), "b.example.");
+        assert_eq!(v[2].to_string(), "c.example.");
+        assert_eq!(v[3].to_string(), "d.example.");
+    }
 
     #[test]
-    fn chain_capped_at_eight() { assert!(true); }
+    fn chain_loop_terminates() {
+        use std::thread;
+        let handle = thread::spawn(|| {
+            let m = make_reply("a.example.", &[
+                ("a.example.", "b.example."),
+                ("b.example.", "a.example."),
+            ]);
+            names_in_chain(&m)
+        });
+        // timeout guard: join with 2s
+        let start = std::time::Instant::now();
+        while !handle.is_finished() && start.elapsed().as_secs() < 2 {}
+        assert!(handle.is_finished(), "hung");
+        let v = handle.join().unwrap();
+        assert!(v.len() <= 3);
+    }
+
+    #[test]
+    fn chain_capped_at_eight() {
+        let mut cnames = Vec::new();
+        for i in 0..12 {
+            cnames.push((format!("n{}.example.", i), format!("n{}.example.", i + 1)));
+        }
+        let refs: Vec<(&str, &str)> = cnames.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let m = make_reply("n0.example.", &refs);
+        let v = names_in_chain(&m);
+        assert!(v.len() <= 9, "got {}", v.len());
+    }
 }

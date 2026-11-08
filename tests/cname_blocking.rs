@@ -149,12 +149,11 @@ fn cname_to_blocked_name_returns_zero_address() {
     let mut ready_ms = 0u128;
     while start.elapsed() < Duration::from_secs(5) {
         let log_text = fs::read_to_string(&log_path).unwrap_or_default();
-        if log_text.contains("DNSGuard UDP listener started") && log_text.contains("DNSGuard TCP listener started") {
-            if query_raw(port, "warmup.example").is_some() {
-                up = true;
-                ready_ms = start.elapsed().as_millis();
-                break;
-            }
+        if log_text.contains("DNSGuard UDP listener started") && log_text.contains("DNSGuard TCP listener started")
+            && query_raw(port, "warmup.example").is_some() {
+            up = true;
+            ready_ms = start.elapsed().as_millis();
+            break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
