@@ -359,3 +359,77 @@ async fn oversized_body_rejected() {
     let received = server.received_requests().await.unwrap_or_default();
     assert!(!received.is_empty(), "mock received no request");
 }
+
+#[tokio::test]
+async fn refresh_fetches_again() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("unrelated.example\n"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("refresh-block.example\n"))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = dir.path().join("cache");
+    fs::create_dir_all(&cache).expect("cache dir");
+    let allow = dir.path().join("allowlist.txt");
+    fs::write(&allow, "").expect("allow");
+
+    let port = free_port();
+    let config_path = dir.path().join("config.toml");
+    let config = format!(
+        "listen = \"127.0.0.1:{port}\"\nupstreams = [\"1.1.1.1:53\"]\nallowlist = \"{}\"\nblocklist = \"{}\"\ncache_dir = \"{}\"\nallow_http = true\nrefresh_interval_secs = 1\n",
+        allow.display().to_string().replace('\\', "/"),
+        server.uri(),
+        cache.display().to_string().replace('\\', "/")
+    );
+    fs::write(&config_path, config).expect("config");
+
+    let log_path = dir.path().join("service.log");
+    let log = fs::File::create(&log_path).expect("log");
+    let child = Command::new(env!("CARGO_BIN_EXE_dnsguard"))
+        .arg("--config")
+        .arg(&config_path)
+        .stdout(Stdio::from(log.try_clone().expect("clone")))
+        .stderr(Stdio::from(log))
+        .stdin(Stdio::null())
+        .spawn()
+        .expect("spawn service");
+    let _guard = KillOnDrop(child);
+
+    let start = Instant::now();
+    let mut up = false;
+    while start.elapsed() < Duration::from_secs(5) {
+        if query_raw(port, "warmup.example").is_some() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(up, "service did not answer DNS");
+
+    // ensure not blocked initially
+    std::thread::sleep(Duration::from_millis(300));
+    let before = query_a(port, "refresh-block.example");
+    assert_ne!(before.as_deref(), Some("0.0.0.0"));
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut after = None;
+    while Instant::now() < deadline {
+        after = query_a(port, "refresh-block.example");
+        if after.as_deref() == Some("0.0.0.0") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    let received = server.received_requests().await.unwrap_or_default();
+    assert!(received.len() >= 2, "expected at least 2 requests, got {}", received.len());
+
+    let log_text = fs::read_to_string(&log_path).unwrap_or_default();
+    assert_eq!(after.as_deref(), Some("0.0.0.0"), "refresh not applied. log:\n{log_text}");
+}
