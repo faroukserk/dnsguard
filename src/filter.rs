@@ -14,12 +14,17 @@ pub enum FilterError {
 
 impl Filter {
     pub fn from_files(allow: &std::path::Path, block: &std::path::Path) -> Result<Self, FilterError> {
-        let allow_text = std::fs::read_to_string(allow)?;
-        let block_text = std::fs::read_to_string(block)?;
-        // write temp files? load_list expects path; just parse sets manually
-        let allowed = parse_list_text(&allow_text);
-        let blocked = parse_list_text(&block_text);
-        if blocked.is_empty() { return Err(FilterError::Empty(block.display().to_string())); }
+        let allow_bytes = std::fs::read(allow)?;
+        let block_bytes = std::fs::read(block)?;
+        Self::from_bytes(&allow_bytes, &block_bytes)
+    }
+
+    pub fn from_bytes(allow: &[u8], block: &[u8]) -> Result<Self, FilterError> {
+        let allow_text = std::str::from_utf8(allow).map_err(|e| FilterError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))?;
+        let block_text = std::str::from_utf8(block).map_err(|e| FilterError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))?;
+        let allowed = parse_list_text(allow_text);
+        let blocked = parse_list_text(block_text);
+        if blocked.is_empty() { return Err(FilterError::Empty("block".into())); }
         Ok(Self::new(blocked, allowed))
     }
 }

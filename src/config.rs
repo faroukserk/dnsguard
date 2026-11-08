@@ -38,13 +38,20 @@ pub enum ConfigError {
 
 impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.upstreams.is_empty() { return Err(ConfigError::Msg("at least one upstream".into())); }
-        if self.max_in_flight == 0 { return Err(ConfigError::Msg("max_in_flight must be > 0".into())); }
+            if self.upstreams.is_empty() { return Err(ConfigError::Msg("at least one upstream".into())); }
+            if self.max_in_flight == 0 { return Err(ConfigError::Msg("max_in_flight must be > 0".into())); }
         if self.max_tcp_connections == 0 { return Err(ConfigError::Msg("max_tcp_connections must be > 0".into())); }
         if self.tcp_idle_timeout_secs == 0 { return Err(ConfigError::Msg("tcp_idle_timeout_secs must be > 0".into())); }
         if self.refresh_interval_secs == 0 { return Err(ConfigError::Msg("refresh_interval_secs must be > 0".into())); }
         Ok(())
     }
+
+    pub fn sources(&self) -> (Option<ListSource>, Option<ListSource>) {
+        let allow = self.allowlist.as_ref().map(|p| ListSource::parse(&p.to_string_lossy(), self.allow_http).unwrap_or_else(|_| ListSource::Local(p.clone())));
+        let block = self.blocklist.as_ref().map(|p| ListSource::parse(&p.to_string_lossy(), self.allow_http).unwrap_or_else(|_| ListSource::Local(p.clone())));
+        (allow, block)
+    }
+
     pub fn load(path: Option<&PathBuf>) -> Result<Self, anyhow::Error> {
         let path = path.cloned().unwrap_or_else(|| PathBuf::from("config.toml"));
         if !path.exists() { anyhow::bail!("config file not found"); }

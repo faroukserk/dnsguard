@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod config;
+pub mod downloader;
 pub mod filter;
 pub mod handler;
 pub mod list_cache;
