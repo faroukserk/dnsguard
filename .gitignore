@@ -2,3 +2,8 @@
 
 fuzz/target/
 fuzz/Cargo.lock
+service.log
+blocklist.txt
+allowlist.txt
+query.py
+list-cache/
