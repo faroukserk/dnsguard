@@ -88,8 +88,17 @@ pub async fn handle_query(bytes: &[u8], state: &State) -> Option<Vec<u8>> {
 
     // forward
     let resp_bytes = forward(&state.upstreams, state.timeout_ms, bytes).await.ok()?;
-    if let Some(cache) = &state.cache && let Ok(rmsg) = Message::from_vec(&resp_bytes) {
-        cache.insert(key, rmsg).await;
+    if let Ok(rmsg) = Message::from_vec(&resp_bytes) {
+        for n in crate::filter::names_in_chain(&rmsg) {
+            let lower = n.to_string().trim_end_matches('.').to_lowercase();
+            if state.filter.load().is_blocked(&lower) {
+                // don't cache; return blocked response for original query
+                if let Some(resp) = state.filter.load().blocked_response(bytes) { return Some(resp); }
+            }
+        }
+        if let Some(cache) = &state.cache {
+            cache.insert(key, rmsg).await;
+        }
     }
     Some(resp_bytes)
 }

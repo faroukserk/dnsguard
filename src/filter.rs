@@ -28,6 +28,43 @@ impl Filter {
         Ok(Self::new(blocked, allowed))
     }
 }
+use hickory_proto::op::Message;
+use hickory_proto::rr::Name;
+
+pub fn names_in_chain(msg: &Message) -> Vec<Name> {
+    let mut out = Vec::new();
+    if let Some(q) = msg.queries.first() {
+        out.push(q.name().clone());
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut current = out.first().cloned();
+    // walk CNAMEs
+    let mut hops = 0;
+    while hops < 8 {
+        // find cname for current
+        let mut next = None;
+        for rr in &msg.answers {
+            if let hickory_proto::rr::RData::CNAME(cname) = &rr.data {
+                if Some(rr.name.clone()) == current {
+                    next = Some(cname.0.clone());
+                    break;
+                }
+            }
+        }
+        match next {
+            Some(n) => {
+                if seen.contains(&n) { break; } // loop
+                seen.insert(n.clone());
+                out.push(n.clone());
+                current = Some(n);
+                hops += 1;
+            }
+            None => break,
+        }
+    }
+    out.truncate(9); // query + up to 8
+    out
+}
 #[derive(Default, Clone)]
 pub struct Filter {
     blocked: HashSet<String>,
