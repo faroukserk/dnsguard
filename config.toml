@@ -1,0 +1,6 @@
+listen = "127.0.0.1:5300"
+upstreams = ["1.1.1.1:53", "9.9.9.9:53"]
+upstream_timeout_ms = 2000
+log_level = "info"
+allowlist = "allowlist.txt"
+blocklist = "blocklist.txt"
