@@ -93,6 +93,10 @@ impl Filter {
         if !self.is_blocked(&domain) { return None; }
         Some(build_blocked(request, qtype))
     }
+    pub fn forced_blocked_response(&self, request: &[u8]) -> Option<Vec<u8>> {
+        let (_, qtype) = parse_question(request)?;
+        Some(build_blocked(request, qtype))
+    }
 }
 
 fn normalize(s: &str) -> String {
