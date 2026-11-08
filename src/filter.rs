@@ -291,20 +291,23 @@ mod tests {
 
     #[test]
     fn chain_loop_terminates() {
+        use std::sync::mpsc;
         use std::thread;
-        let handle = thread::spawn(|| {
+        use std::time::Duration;
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
             let m = make_reply("a.example.", &[
                 ("a.example.", "b.example."),
                 ("b.example.", "a.example."),
             ]);
-            names_in_chain(&m)
+            let v = names_in_chain(&m);
+            let _ = tx.send(v);
         });
-        // timeout guard: join with 2s
-        let start = std::time::Instant::now();
-        while !handle.is_finished() && start.elapsed().as_secs() < 2 {}
-        assert!(handle.is_finished(), "hung");
-        let v = handle.join().unwrap();
-        assert!(v.len() <= 3);
+        let v = rx.recv_timeout(Duration::from_secs(2)).expect("chain walk hung");
+        assert_eq!(v.len(), 3);
+        assert_eq!(v[0].to_string(), "a.example.");
+        assert_eq!(v[1].to_string(), "b.example.");
+        assert_eq!(v[2].to_string(), "a.example.");
     }
 
     #[test]
@@ -316,6 +319,7 @@ mod tests {
         let refs: Vec<(&str, &str)> = cnames.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
         let m = make_reply("n0.example.", &refs);
         let v = names_in_chain(&m);
-        assert!(v.len() <= 9, "got {}", v.len());
+        assert_eq!(v.len(), 9);
+        assert_eq!(v[8].to_string(), "n8.example.");
     }
 }
